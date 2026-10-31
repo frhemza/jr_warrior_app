@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "645578861075",
+    "project_id": "jr-warrior-app",
+    "storage_bucket": "jr-warrior-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:645578861075:android:935ca2ba90d17cfbe0ade6",
+        "android_client_info": {
+          "package_name": "com.example.jr_warrior_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCzWRqO4BBosTGZPyr0ZnZx54DXbXKqmi4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
