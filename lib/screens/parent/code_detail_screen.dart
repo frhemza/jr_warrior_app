@@ -1,403 +1,391 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../models/child.dart';
 import '../../models/warrior_code.dart';
 
-class CodeDetailScreen extends StatefulWidget {
-  const CodeDetailScreen({super.key, required this.childId});
+const Color kDeepOlive = Color(0xFF1A2F25);
+const Color kWarmCream = Color(0xFFFBF9F5);
+const Color kTerracotta = Color(0xFFC85A32);
 
+class CodeDetailScreen extends StatefulWidget {
   final String childId;
+  final String? codeId;
+
+  const CodeDetailScreen({
+    super.key,
+    required this.childId,
+    this.codeId,
+  });
 
   @override
   State<CodeDetailScreen> createState() => _CodeDetailScreenState();
 }
 
 class _CodeDetailScreenState extends State<CodeDetailScreen> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final ImagePicker _picker = ImagePicker();
+
+  Uint8List? _selectedImageBytes;
+  String? _photoBase64;
   bool _isSubmitting = false;
 
-  Future<void> _markAsPractised(Child child) async {
-    if (_isSubmitting || !child.isInProgress) {
-      return;
+  Future<void> _pickPhotoProof() async {
+    final XFile? pickedFile = await _picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 800,
+      maxHeight: 800,
+      imageQuality: 75,
+    );
+
+    if (pickedFile != null) {
+      final bytes = await pickedFile.readAsBytes();
+      setState(() {
+        _selectedImageBytes = bytes;
+        _photoBase64 = base64Encode(bytes);
+      });
     }
+  }
+
+  Future<void> _markAsPracticed(Child child, WarriorCode code) async {
+    if (_isSubmitting) return;
 
     setState(() {
       _isSubmitting = true;
     });
 
-    final firestore = FirebaseFirestore.instance;
-    final childRef = firestore.collection('children').doc(child.childId);
-    final approvalRef = firestore.collection('approvals_queue').doc();
-
     try {
-      await firestore.runTransaction((transaction) async {
-        final snapshot = await transaction.get(childRef);
-        final latest = snapshot.exists ? Child.fromDoc(snapshot) : child;
-        if (!latest.isInProgress) {
-          return;
-        }
+      // Use a deterministic document ID `${child.id}_${code.id}` to prevent duplicates
+      await _firestore.collection('approvals_queue').doc('${child.id}_${code.id}').set({
+        'childId': child.id,
+        'childName': child.name,
+        'codeId': code.id,
+        'codeTitle': code.title,
+        'parentId': child.parentId,
+        'photoBase64': _photoBase64 ?? '',
+        'status': 'pending',
+        'submittedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
-        transaction.update(childRef, {
-          'status': 'pending_approval',
-          'lastProgressUpdate': FieldValue.serverTimestamp(),
-        });
-        transaction.set(approvalRef, {
-          'childId': child.childId,
-          'codeId': child.currentCodeId,
-          'submittedAt': FieldValue.serverTimestamp(),
-          'status': 'pending',
-          'coachNote': '',
-        });
+      await _firestore.collection('children').doc(child.id).update({
+        'lastActive': FieldValue.serverTimestamp(),
       });
 
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text('${child.fullName} is submitted and awaiting coach approval.'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          const SnackBar(
-            content: Text('Unable to submit practice. Please try again.'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-    } finally {
       if (mounted) {
-        setState(() {
-          _isSubmitting = false;
-        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${child.name}\'s practice sent to Coach for approval!'),
+            backgroundColor: kDeepOlive,
+          ),
+        );
       }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: kTerracotta,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance.collection('children').doc(widget.childId).snapshots(),
-      builder: (context, childSnapshot) {
-        if (childSnapshot.connectionState == ConnectionState.waiting && !childSnapshot.hasData) {
-          return Scaffold(
-            appBar: AppBar(title: const Text('Warrior Code')),
-            body: const Center(child: CircularProgressIndicator()),
+    return StreamBuilder<DocumentSnapshot>(
+      stream: _firestore.collection('children').doc(widget.childId).snapshots(),
+      builder: (context, childSnap) {
+        if (!childSnap.hasData || !childSnap.data!.exists) {
+          return const Scaffold(
+            backgroundColor: kWarmCream,
+            body: Center(child: CircularProgressIndicator(color: kTerracotta)),
           );
         }
 
-        if (!childSnapshot.hasData || childSnapshot.data?.exists != true) {
-          return Scaffold(
-            appBar: AppBar(title: const Text('Warrior Code')),
-            body: const Center(child: Text('This warrior could not be found.')),
-          );
-        }
+        final child = Child.fromDoc(childSnap.data!);
+        final targetCodeId = (widget.codeId != null && widget.codeId!.isNotEmpty)
+            ? widget.codeId!
+            : child.currentCodeId;
 
-        final child = Child.fromDoc(childSnapshot.data!);
-
-        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-          stream: FirebaseFirestore.instance
-              .collection('warrior_codes')
-              .doc(child.currentCodeId)
+        return StreamBuilder<DocumentSnapshot>(
+          // Listen to the specific approval document for this child & code
+          stream: _firestore
+              .collection('approvals_queue')
+              .doc('${child.id}_$targetCodeId')
               .snapshots(),
-          builder: (context, codeSnapshot) {
-            final code = codeSnapshot.data?.exists == true
-                ? WarriorCode.fromDoc(codeSnapshot.data!)
-                : null;
+          builder: (context, approvalSnap) {
+            String approvalStatus = '';
+            if (approvalSnap.hasData && approvalSnap.data!.exists) {
+              final data = approvalSnap.data!.data() as Map<String, dynamic>?;
+              approvalStatus = (data?['status'] ?? '').toString().toLowerCase();
+            }
 
-            return Scaffold(
-              appBar: AppBar(title: Text(child.fullName)),
-              body: codeSnapshot.connectionState == ConnectionState.waiting && code == null
-                  ? const Center(child: CircularProgressIndicator())
-                  : ListView(
-                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-                      children: [
-                        _EditorialCodeCard(code: code, childName: child.fullName),
-                        const SizedBox(height: 24),
-                        _PracticeAction(
-                          child: child,
-                          isSubmitting: _isSubmitting,
-                          onMarkPractised: () => _markAsPractised(child),
+            return StreamBuilder<DocumentSnapshot>(
+              stream: _firestore
+                  .collection('warrior_codes')
+                  .doc(targetCodeId)
+                  .snapshots(),
+              builder: (context, codeSnap) {
+                if (codeSnap.connectionState == ConnectionState.waiting) {
+                  return Scaffold(
+                    backgroundColor: kWarmCream,
+                    appBar: AppBar(title: const Text('Warrior Code')),
+                    body: const Center(child: CircularProgressIndicator(color: kTerracotta)),
+                  );
+                }
+
+                if (!codeSnap.hasData || !codeSnap.data!.exists) {
+                  return Scaffold(
+                    backgroundColor: kWarmCream,
+                    appBar: AppBar(title: const Text('Warrior Code')),
+                    body: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24.0),
+                        child: Text(
+                          'Warrior Code details are currently unavailable.',
+                          style: GoogleFonts.sourceSans3(color: kDeepOlive, fontSize: 16),
+                          textAlign: TextAlign.center,
                         ),
-                      ],
+                      ),
                     ),
+                  );
+                }
+
+                final code = WarriorCode.fromDoc(codeSnap.data!);
+                final bool isCompletedInChild = child.codesCompleted.contains(code.id);
+                final bool isApproved = approvalStatus == 'approved' || isCompletedInChild;
+                final bool isPending = approvalStatus == 'pending' || _isSubmitting;
+
+                return Scaffold(
+                  backgroundColor: kWarmCream,
+                  appBar: AppBar(
+                    title: Text(code.title),
+                  ),
+                  body: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      if (code.imageUrl.isNotEmpty)
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(16),
+                          child: Image.network(
+                            code.imageUrl,
+                            height: 200,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(
+                              height: 160,
+                              color: kDeepOlive.withOpacity(0.1),
+                              child: const Icon(Icons.shield, size: 64, color: kDeepOlive),
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 16),
+                      Text(
+                        code.title,
+                        style: GoogleFonts.sourceSans3(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: kDeepOlive,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        code.description,
+                        style: GoogleFonts.sourceSans3(
+                          fontSize: 16,
+                          color: kDeepOlive.withOpacity(0.8),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Text(
+                        'How to Practise at Home',
+                        style: GoogleFonts.sourceSans3(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: kDeepOlive,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      if (code.instructions.isEmpty)
+                        Text(
+                          'Practice the key habit daily with focus and respect.',
+                          style: GoogleFonts.sourceSans3(fontSize: 15, color: kDeepOlive),
+                        )
+                      else
+                        ...code.instructions.map(
+                          (inst) => Padding(
+                            padding: const EdgeInsets.only(bottom: 8.0),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(Icons.check_circle_outline, color: kTerracotta, size: 20),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    inst,
+                                    style: GoogleFonts.sourceSans3(
+                                      fontSize: 15,
+                                      color: kDeepOlive,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 20),
+                      if (!isApproved && !isPending) ...[
+                        Text(
+                          'Attach Photo Proof (Optional)',
+                          style: GoogleFonts.sourceSans3(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: kDeepOlive,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        GestureDetector(
+                          onTap: _pickPhotoProof,
+                          child: Container(
+                            height: 140,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: kDeepOlive.withOpacity(0.2)),
+                            ),
+                            child: _selectedImageBytes != null
+                                ? ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.memory(
+                                      _selectedImageBytes!,
+                                      fit: BoxFit.cover,
+                                      width: double.infinity,
+                                    ),
+                                  )
+                                : Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      const Icon(Icons.add_a_photo_outlined, color: kTerracotta, size: 32),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Tap to select a photo of home practice',
+                                        style: GoogleFonts.sourceSans3(
+                                          fontSize: 13,
+                                          color: kDeepOlive.withOpacity(0.6),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(height: 28),
+                      ],
+                      _buildBottomActionButton(
+                        child: child,
+                        code: code,
+                        isPending: isPending,
+                        isApproved: isApproved,
+                      ),
+                    ],
+                  ),
+                );
+              },
             );
           },
         );
       },
     );
   }
-}
 
-class _EditorialCodeCard extends StatelessWidget {
-  const _EditorialCodeCard({
-    required this.code,
-    required this.childName,
-  });
-
-  final WarriorCode? code;
-  final String childName;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final title = code?.title ?? 'Code details unavailable';
-    final description = code?.description ??
-        'The active warrior code could not be loaded. Ask your coach to check this assignment.';
-    final instructions = code?.instructions ?? const <String>[];
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: colors.primary.withValues(alpha: 0.08)),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (code != null && code!.imageUrl.isNotEmpty)
-            AspectRatio(
-              aspectRatio: 16 / 9,
-              child: Image.network(
-                code!.imageUrl,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => Container(
-                  color: colors.primary.withValues(alpha: 0.06),
-                  child: Icon(Icons.shield_outlined, size: 48, color: colors.secondary),
-                ),
-              ),
-            ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 24, 24, 28),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'PRACTICE WITH $childName'.toUpperCase(),
-                  style: GoogleFonts.sourceSans3(
-                    fontSize: 12,
-                    letterSpacing: 1.4,
-                    fontWeight: FontWeight.w600,
-                    color: colors.secondary,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  title,
-                  style: GoogleFonts.sourceSerif4(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w600,
-                    color: colors.primary,
-                    height: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  description,
-                  style: GoogleFonts.sourceSans3(
-                    fontSize: 16,
-                    height: 1.5,
-                    color: colors.primary.withValues(alpha: 0.8),
-                  ),
-                ),
-                if (instructions.isNotEmpty) ...[
-                  const SizedBox(height: 24),
-                  Text(
-                    'Parent practice steps',
-                    style: GoogleFonts.sourceSerif4(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
-                      color: colors.primary,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  for (var i = 0; i < instructions.length; i++) ...[
-                    _InstructionRow(number: i + 1, text: instructions[i]),
-                    if (i != instructions.length - 1) const SizedBox(height: 10),
-                  ],
-                ],
-                if (code != null && code!.milestoneReward.isNotEmpty) ...[
-                  const SizedBox(height: 24),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFBF9F5),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(Icons.emoji_events_outlined, color: colors.secondary),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            code!.milestoneReward,
-                            style: GoogleFonts.sourceSans3(
-                              fontSize: 15,
-                              height: 1.4,
-                              color: colors.primary,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _InstructionRow extends StatelessWidget {
-  const _InstructionRow({
-    required this.number,
-    required this.text,
-  });
-
-  final int number;
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 26,
-          height: 26,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: colors.primary,
-            shape: BoxShape.circle,
-          ),
-          child: Text(
-            '$number',
-            style: GoogleFonts.sourceSans3(
-              color: colors.onPrimary,
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            text,
-            style: GoogleFonts.sourceSans3(
-              fontSize: 16,
-              height: 1.45,
-              color: colors.primary.withValues(alpha: 0.85),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _PracticeAction extends StatelessWidget {
-  const _PracticeAction({
-    required this.child,
-    required this.isSubmitting,
-    required this.onMarkPractised,
-  });
-
-  final Child child;
-  final bool isSubmitting;
-  final VoidCallback onMarkPractised;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-
-    if (child.isPendingApproval) {
+  Widget _buildBottomActionButton({
+    required Child child,
+    required WarriorCode code,
+    required bool isPending,
+    required bool isApproved,
+  }) {
+    if (isApproved) {
       return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: const Color(0xFFF3E2B3),
-          borderRadius: BorderRadius.circular(16),
+          color: Colors.green.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.green),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            const Icon(Icons.check_circle, color: Colors.green),
+            const SizedBox(width: 8),
             Text(
-              'Submitted - Awaiting Coach Approval',
-              textAlign: TextAlign.center,
+              'Code Completed!!',
               style: GoogleFonts.sourceSans3(
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.bold,
+                color: Colors.green,
                 fontSize: 16,
-                color: const Color(0xFF8A6A12),
               ),
-            ),
-            const SizedBox(height: 12),
-            ElevatedButton(
-              onPressed: null,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: colors.secondary.withValues(alpha: 0.45),
-                disabledBackgroundColor: colors.secondary.withValues(alpha: 0.45),
-                disabledForegroundColor: colors.onSecondary,
-              ),
-              child: const Text('Submitted - Awaiting Coach Approval'),
             ),
           ],
         ),
       );
     }
 
-    if (child.isCompleted) {
+    if (isPending) {
       return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(18),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: colors.primary,
-          borderRadius: BorderRadius.circular(16),
+          color: kTerracotta.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: kTerracotta),
         ),
-        child: Text(
-          'This code is complete.',
-          textAlign: TextAlign.center,
-          style: GoogleFonts.sourceSans3(
-            color: colors.onPrimary,
-            fontWeight: FontWeight.w600,
-            fontSize: 16,
-          ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, color: kTerracotta),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'Pending...',
+              style: GoogleFonts.sourceSans3(
+                fontWeight: FontWeight.bold,
+                color: kTerracotta,
+                fontSize: 16,
+              ),
+            ),
+          ],
         ),
       );
     }
 
-    return ElevatedButton(
-      onPressed: isSubmitting ? null : onMarkPractised,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: colors.secondary,
-        foregroundColor: colors.onSecondary,
-        minimumSize: const Size.fromHeight(56),
+    return ElevatedButton.icon(
+      onPressed: () => _markAsPracticed(child, code),
+      icon: const Icon(Icons.verified),
+      label: Text(
+        'Mark as Practised',
+        style: GoogleFonts.sourceSans3(
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+        ),
       ),
-      child: isSubmitting
-          ? SizedBox(
-              height: 22,
-              width: 22,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: colors.onSecondary,
-              ),
-            )
-          : const Text('Mark as Practised'),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: kTerracotta,
+        foregroundColor: kWarmCream,
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        minimumSize: const Size(double.infinity, 52),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
     );
   }
 }

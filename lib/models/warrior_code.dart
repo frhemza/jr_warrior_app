@@ -1,45 +1,65 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class WarriorCode {
-  final String codeId;
-  final int order;
+  final String id;
   final String title;
-  final String imageUrl;
   final String description;
-  final List<String> instructions;
+  final String imageUrl;
+  final String parentInstructions;
+  final List<String> instructionsList;
   final String milestoneReward;
+  final int order;
 
   WarriorCode({
-    required this.codeId,
-    required this.order,
+    required this.id,
     required this.title,
-    required this.imageUrl,
     required this.description,
-    required this.instructions,
+    required this.imageUrl,
+    required this.parentInstructions,
+    required this.instructionsList,
     required this.milestoneReward,
+    required this.order,
   });
 
-  factory WarriorCode.fromDoc(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>? ?? {};
+  String get codeId => id;
+
+  List<String> get instructions => instructionsList.isNotEmpty
+      ? instructionsList
+      : (parentInstructions.isNotEmpty ? [parentInstructions] : const <String>[]);
+
+  factory WarriorCode.fromMap(String id, Map<String, dynamic> map) {
+    final rawInstructions = map['instructions'];
+    List<String> parsedInstructions = [];
+    if (rawInstructions is List) {
+      parsedInstructions = List<String>.from(rawInstructions);
+    }
+
     return WarriorCode(
-      codeId: doc.id,
-      order: (data['order'] as num?)?.toInt() ?? 0,
-      title: data['title'] ?? '',
-      imageUrl: data['imageUrl'] ?? '',
-      description: data['description'] ?? '',
-      instructions: List<String>.from(data['instructions'] ?? []),
-      milestoneReward: data['milestoneReward'] ?? '',
+      id: id,
+      title: map['title'] ?? '',
+      description: map['description'] ?? '',
+      imageUrl: map['imageUrl'] ?? '',
+      parentInstructions: map['parentInstructions'] ?? '',
+      instructionsList: parsedInstructions,
+      milestoneReward: map['milestoneReward'] ?? '',
+      order: map['order'] ?? 0,
     );
+  }
+
+  factory WarriorCode.fromDoc(DocumentSnapshot doc) {
+    final data = (doc.data() as Map<String, dynamic>?) ?? {};
+    return WarriorCode.fromMap(doc.id, data);
   }
 
   Map<String, dynamic> toMap() {
     return {
-      'order': order,
       'title': title,
-      'imageUrl': imageUrl,
       'description': description,
-      'instructions': instructions,
+      'imageUrl': imageUrl,
+      'parentInstructions': parentInstructions,
+      'instructions': instructionsList,
       'milestoneReward': milestoneReward,
+      'order': order,
     };
   }
 }

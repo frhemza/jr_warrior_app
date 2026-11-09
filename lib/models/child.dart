@@ -1,63 +1,68 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class Child {
-  final String childId;
+  final String id;
   final String parentId;
-  final String fullName;
+  final String name;
+  final int age;
+  final String feeStatus;
+  final String status; // 'in_progress', 'pending_approval', 'completed'
   final String currentCodeId;
-  final String status; // 'in_progress' | 'pending_approval' | 'completed'
+  final List<String> codesCompleted;
   final List<String> trophiesEarned;
-  final DateTime lastProgressUpdate;
+  final DateTime? lastActive;
 
   Child({
-    required this.childId,
+    required this.id,
     required this.parentId,
-    required this.fullName,
-    required this.currentCodeId,
+    required this.name,
+    required this.age,
+    required this.feeStatus,
     required this.status,
+    required this.currentCodeId,
+    required this.codesCompleted,
     required this.trophiesEarned,
-    required this.lastProgressUpdate,
+    this.lastActive,
   });
 
-  // Helper Getters expected by UI Screens
+  String get childId => id;
+  String get fullName => name;
   bool get isInProgress => status == 'in_progress';
   bool get isPendingApproval => status == 'pending_approval';
   bool get isCompleted => status == 'completed';
+  DateTime get lastProgressUpdate => lastActive ?? DateTime.now();
 
-  bool isInactive({int thresholdDays = 14}) {
-    return DateTime.now().difference(lastProgressUpdate).inDays >= thresholdDays;
+  factory Child.fromMap(String id, Map<String, dynamic> map) {
+    return Child(
+      id: id,
+      parentId: map['parentId'] ?? '',
+      name: map['name'] ?? map['fullName'] ?? '',
+      age: map['age'] ?? 0,
+      feeStatus: map['feeStatus'] ?? 'paid',
+      status: map['status'] ?? 'in_progress',
+      currentCodeId: map['currentCodeId'] ?? map['codeId'] ?? 'code_1',
+      codesCompleted: List<String>.from(map['codesCompleted'] ?? []),
+      trophiesEarned: List<String>.from(map['trophiesEarned'] ?? []),
+      lastActive: (map['lastActive'] as Timestamp?)?.toDate(),
+    );
   }
 
   factory Child.fromDoc(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>? ?? {};
-    return Child(
-      childId: doc.id,
-      parentId: data['parentId'] ?? '',
-      fullName: data['fullName'] ?? '',
-      currentCodeId: data['currentCodeId'] ?? '',
-      status: data['status'] ?? 'in_progress',
-      trophiesEarned: List<String>.from(data['trophiesEarned'] ?? []),
-      lastProgressUpdate: _parseDateTime(data['lastProgressUpdate']),
-    );
+    final data = (doc.data() as Map<String, dynamic>?) ?? {};
+    return Child.fromMap(doc.id, data);
   }
 
   Map<String, dynamic> toMap() {
     return {
       'parentId': parentId,
-      'fullName': fullName,
-      'currentCodeId': currentCodeId,
+      'name': name,
+      'age': age,
+      'feeStatus': feeStatus,
       'status': status,
+      'currentCodeId': currentCodeId,
+      'codesCompleted': codesCompleted,
       'trophiesEarned': trophiesEarned,
-      'lastProgressUpdate': Timestamp.fromDate(lastProgressUpdate),
+      'lastActive': lastActive != null ? Timestamp.fromDate(lastActive!) : FieldValue.serverTimestamp(),
     };
-  }
-
-  static DateTime _parseDateTime(dynamic raw) {
-    if (raw is Timestamp) {
-      return raw.toDate();
-    } else if (raw is String) {
-      return DateTime.tryParse(raw) ?? DateTime.now();
-    }
-    return DateTime.now();
   }
 }

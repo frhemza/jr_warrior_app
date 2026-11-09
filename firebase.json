@@ -1,27 +1,4 @@
 {
-  "flutter": {
-    "platforms": {
-      "android": {
-        "default": {
-          "projectId": "jr-warrior-app",
-          "appId": "1:645578861075:android:935ca2ba90d17cfbe0ade6",
-          "fileOutput": "android/app/google-services.json"
-        }
-      },
-      "dart": {
-        "lib/firebase_options.dart": {
-          "projectId": "jr-warrior-app",
-          "configurations": {
-            "android": "1:645578861075:android:935ca2ba90d17cfbe0ade6",
-            "ios": "1:645578861075:ios:49d875ea50d0f91ce0ade6",
-            "macos": "1:645578861075:ios:49d875ea50d0f91ce0ade6",
-            "web": "1:645578861075:web:a5489c4280ca0673e0ade6",
-            "windows": "1:645578861075:web:5df9250a859002bee0ade6"
-          }
-        }
-      }
-    }
-  },
   "hosting": {
     "public": "build/web",
     "ignore": [
@@ -34,6 +11,31 @@
         "source": "**",
         "destination": "/index.html"
       }
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(js|html|json)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=0, no-cache, no-store, must-revalidate"
+          }
+        ]
+      }
     ]
-  }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ]
 }

@@ -1,11 +1,14 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:image_picker/image_picker.dart';
+
 import '../../models/child.dart';
 import '../../models/warrior_code.dart';
 import '../../widgets/badge_card.dart';
 
-class ChildDashboardScreen extends StatelessWidget {
+class ChildDashboardScreen extends StatefulWidget {
   final String childId;
 
   const ChildDashboardScreen({
@@ -14,9 +17,61 @@ class ChildDashboardScreen extends StatelessWidget {
   });
 
   @override
+  State<ChildDashboardScreen> createState() => _ChildDashboardScreenState();
+}
+
+class _ChildDashboardScreenState extends State<ChildDashboardScreen> {
+  final ImagePicker _picker = ImagePicker();
+
+  Future<void> _pickAndUploadPhoto() async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 600,
+        maxHeight: 600,
+        imageQuality: 80,
+      );
+
+      if (image == null) return;
+
+      final bytes = await image.readAsBytes();
+      final base64Image = base64Encode(bytes);
+
+      await FirebaseFirestore.instance
+          .collection('children')
+          .doc(widget.childId)
+          .update({
+        'photoBase64': base64Image,
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Profile picture updated successfully!'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update picture: $e'),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance.collection('children').doc(childId).snapshots(),
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('children')
+          .doc(widget.childId)
+          .snapshots(),
       builder: (context, childSnap) {
         if (childSnap.connectionState == ConnectionState.waiting) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -29,24 +84,71 @@ class ChildDashboardScreen extends StatelessWidget {
           );
         }
 
+        final childData = childSnap.data!.data() as Map<String, dynamic>? ?? {};
         final child = Child.fromDoc(childSnap.data!);
+        final String? photoBase64 = childData['photoBase64'] as String?;
 
         return Scaffold(
           backgroundColor: const Color(0xFFFBF9F5),
           appBar: AppBar(
             backgroundColor: const Color(0xFFFBF9F5),
             elevation: 0,
-            title: Text(
-              '${child.fullName}\'s Portal',
-              style: GoogleFonts.sourceSerif4(
-                fontWeight: FontWeight.w600,
-                color: const Color(0xFF1A2F25),
-              ),
+            title: Row(
+              children: [
+                GestureDetector(
+                  onTap: _pickAndUploadPhoto,
+                  child: Stack(
+                    children: [
+                      CircleAvatar(
+                        radius: 18,
+                        backgroundColor: const Color(0xFF1A2F25),
+                        backgroundImage: (photoBase64 != null && photoBase64.isNotEmpty)
+                            ? MemoryImage(base64Decode(photoBase64))
+                            : null,
+                        child: (photoBase64 == null || photoBase64.isEmpty)
+                            ? Text(
+                                child.fullName.isNotEmpty ? child.fullName[0].toUpperCase() : 'W',
+                                style: GoogleFonts.sourceSans3(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                ),
+                              )
+                            : null,
+                      ),
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFFC85A32),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.camera_alt,
+                            size: 10,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  '${child.fullName}\'s Portal',
+                  style: GoogleFonts.sourceSerif4(
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFF1A2F25),
+                  ),
+                ),
+              ],
             ),
           ),
-          body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          body: StreamBuilder<DocumentSnapshot>(
             stream: FirebaseFirestore.instance
-                .collection('codes')
+                .collection('warrior_codes')
                 .doc(child.currentCodeId)
                 .snapshots(),
             builder: (context, codeSnap) {
@@ -73,7 +175,7 @@ class ChildDashboardScreen extends StatelessWidget {
                     'Earn badges as you practice and complete Warrior Codes.',
                     style: GoogleFonts.sourceSans3(
                       fontSize: 14,
-                      color: const Color(0xFF1A2F25).withValues(alpha: 0.7),
+                      color: const Color(0xFF1A2F25).withOpacity(0.7),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -140,7 +242,7 @@ class ChildDashboardScreen extends StatelessWidget {
             code?.description ?? 'Complete practice actions to earn your next badge!',
             style: GoogleFonts.sourceSans3(
               fontSize: 14,
-              color: Colors.white.withValues(alpha: 0.8),
+              color: Colors.white.withOpacity(0.8),
             ),
           ),
         ],
@@ -149,8 +251,11 @@ class ChildDashboardScreen extends StatelessWidget {
   }
 
   Widget _buildTrophyGallery(List<String> trophiesEarned) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance.collection('codes').orderBy('order').snapshots(),
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('warrior_codes')
+          .orderBy('order')
+          .snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());

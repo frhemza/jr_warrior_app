@@ -25,6 +25,25 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final rawUrl = Uri.base.toString();
+      final uri = Uri.base;
+
+      final isCoachLink = rawUrl.contains('role=coach') ||
+          uri.queryParameters['role'] == 'coach' ||
+          uri.fragment.contains('role=coach');
+
+      if (isCoachLink) {
+        setState(() {
+          _role = UserRole.coach;
+        });
+      }
+    });
+  }
+
+  @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
@@ -34,9 +53,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _showError(String message) {
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -45,6 +62,16 @@ class _LoginScreenState extends State<LoginScreen> {
           behavior: SnackBarBehavior.floating,
         ),
       );
+  }
+
+  String _formatPhoneNumber(String input) {
+    String clean = input.replaceAll(RegExp(r'[^\d+]'), '');
+    if (clean.startsWith('0')) {
+      clean = '+92${clean.substring(1)}';
+    } else if (!clean.startsWith('+')) {
+      clean = '+$clean';
+    }
+    return clean;
   }
 
   String _messageForAuthError(FirebaseAuthException error) {
@@ -71,6 +98,69 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  void _showForgotPasswordDialog() {
+    final emailResetController = TextEditingController(text: _emailController.text.trim());
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(
+          'Reset Password',
+          style: GoogleFonts.sourceSans3(fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Enter your registered email address to receive a password reset link.',
+              style: GoogleFonts.sourceSans3(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: emailResetController,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(
+                labelText: 'Email Address',
+                hintText: 'name@example.com',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final email = emailResetController.text.trim();
+              if (email.isNotEmpty) {
+                try {
+                  await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+                  if (mounted) {
+                    Navigator.pop(dialogContext);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Password reset link sent to $email'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    _showError('Error sending reset link: $e');
+                  }
+                }
+              }
+            },
+            child: const Text('Send Link'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) {
       return;
@@ -82,6 +172,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
     final email = _emailController.text.trim();
     final password = _passwordController.text;
+    final rawPhone = _phoneController.text.trim();
+    final formattedPhone = _formatPhoneNumber(rawPhone);
 
     try {
       if (_isCreateAccount) {
@@ -99,12 +191,17 @@ class _LoginScreenState extends State<LoginScreen> {
 
         final fullName = _fullNameController.text.trim();
         await user.updateDisplayName(fullName);
+
+        // Save user profile directly to Firestore
         await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
           'uid': user.uid,
           'role': _role.name,
+          'name': fullName,
           'fullName': fullName,
-          'phone': _phoneController.text.trim(),
+          'phone': formattedPhone,
+          'parentPhone': formattedPhone,
           'email': email,
+          'createdAt': FieldValue.serverTimestamp(),
         });
       } else {
         await FirebaseAuth.instance.signInWithEmailAndPassword(
@@ -140,7 +237,11 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final subtitle = _isCreateAccount ? 'Create your account' : 'Sign in to continue';
+    final isCoachMode = _role == UserRole.coach;
+
+    final subtitle = _isCreateAccount
+        ? (isCoachMode ? 'Create a Coach account' : 'Create your parent account')
+        : 'Sign in to continue';
     final actionLabel = _isCreateAccount ? 'Create Account' : 'Sign In';
     final switchLabel = _isCreateAccount
         ? 'Already have an account? Sign In'
@@ -158,12 +259,18 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    const Icon(
+                      Icons.shield_outlined,
+                      size: 56,
+                      color: Color(0xFFC85A32),
+                    ),
+                    const SizedBox(height: 12),
                     Text(
                       'Jr. Warrior',
                       textAlign: TextAlign.center,
                       style: GoogleFonts.sourceSerif4(
                         fontSize: 32,
-                        fontWeight: FontWeight.w600,
+                        fontWeight: FontWeight.bold,
                         color: colors.primary,
                       ),
                     ),
@@ -178,43 +285,44 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     const SizedBox(height: 32),
                     if (_isCreateAccount) ...[
-                      SegmentedButton<UserRole>(
-                        segments: const [
-                          ButtonSegment(
-                            value: UserRole.coach,
-                            label: Text('Coach'),
-                            icon: Icon(Icons.sports),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isCoachMode
+                              ? const Color(0xFFC85A32).withValues(alpha: 0.12)
+                              : colors.primary.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isCoachMode
+                                ? const Color(0xFFC85A32)
+                                : colors.primary.withValues(alpha: 0.18),
                           ),
-                          ButtonSegment(
-                            value: UserRole.parent,
-                            label: Text('Parent'),
-                            icon: Icon(Icons.family_restroom),
-                          ),
-                        ],
-                        selected: {_role},
-                        onSelectionChanged: _isLoading
-                            ? null
-                            : (selection) {
-                                setState(() {
-                                  _role = selection.first;
-                                });
-                              },
-                        style: ButtonStyle(
-                          foregroundColor: WidgetStateProperty.resolveWith((states) {
-                            if (states.contains(WidgetState.selected)) {
-                              return colors.onSecondary;
-                            }
-                            return colors.primary;
-                          }),
-                          backgroundColor: WidgetStateProperty.resolveWith((states) {
-                            if (states.contains(WidgetState.selected)) {
-                              return colors.secondary;
-                            }
-                            return colors.surface;
-                          }),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              isCoachMode ? Icons.sports : Icons.family_restroom,
+                              color: isCoachMode ? const Color(0xFFC85A32) : colors.primary,
+                              size: 22,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                isCoachMode
+                                    ? 'Secret Coach Registration Active'
+                                    : 'Parent Account Registration',
+                                textAlign: TextAlign.left,
+                                style: GoogleFonts.sourceSans3(
+                                  fontWeight: FontWeight.bold,
+                                  color: isCoachMode ? const Color(0xFFC85A32) : colors.primary,
+                                  fontSize: 15,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 28),
+                      const SizedBox(height: 20),
                       TextFormField(
                         controller: _fullNameController,
                         enabled: !_isLoading,
@@ -225,9 +333,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           prefixIcon: Icon(Icons.person_outline, color: colors.primary),
                         ),
                         validator: (value) {
-                          if (!_isCreateAccount) {
-                            return null;
-                          }
+                          if (!_isCreateAccount) return null;
                           if (value == null || value.trim().isEmpty) {
                             return 'Enter your full name';
                           }
@@ -241,15 +347,16 @@ class _LoginScreenState extends State<LoginScreen> {
                         keyboardType: TextInputType.phone,
                         autofillHints: const [AutofillHints.telephoneNumber],
                         decoration: InputDecoration(
-                          labelText: 'Phone',
+                          labelText: 'Phone Number (e.g. 03001234567)',
                           prefixIcon: Icon(Icons.phone_outlined, color: colors.primary),
                         ),
                         validator: (value) {
-                          if (!_isCreateAccount) {
-                            return null;
-                          }
+                          if (!_isCreateAccount) return null;
                           if (value == null || value.trim().isEmpty) {
                             return 'Enter your phone number';
+                          }
+                          if (value.trim().length < 10) {
+                            return 'Enter a valid phone number';
                           }
                           return null;
                         },
@@ -308,7 +415,23 @@ class _LoginScreenState extends State<LoginScreen> {
                         return null;
                       },
                     ),
-                    const SizedBox(height: 28),
+                    if (!_isCreateAccount) ...[
+                      const SizedBox(height: 4),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: _isLoading ? null : _showForgotPasswordDialog,
+                          child: Text(
+                            'Forgot Password?',
+                            style: GoogleFonts.sourceSans3(
+                              fontWeight: FontWeight.bold,
+                              color: colors.primary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 24),
                     ElevatedButton(
                       onPressed: _isLoading ? null : _submit,
                       child: _isLoading
